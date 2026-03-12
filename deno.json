@@ -1,0 +1,12 @@
+{
+    "name": "@pons/sdk",
+    "version": "0.2.1",
+    "license": "MIT",
+    "exports": {
+        ".": "./src/index.ts",
+        "./config": "./src/config.ts"
+    },
+    "imports": {
+        "zod": "npm:zod@^3.24"
+    }
+}
