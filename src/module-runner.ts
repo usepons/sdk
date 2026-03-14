@@ -15,7 +15,7 @@
  *   new MyModule().start();
  */
 
-import { randomUUID } from 'node:crypto';
+const randomUUID = (): string => crypto.randomUUID();
 import type { Logger } from './logger.ts';
 import type { ModuleManifest } from './module-types.ts';
 import type { KernelMessage, ModuleMessage } from './ipc-protocol.ts';
@@ -36,14 +36,41 @@ export abstract class ModuleRunner {
   // ─── Start ────────────────────────────────────────────────
 
   start(): void {
-    process.on('message', (raw) => {
-      this.handleKernelMessage(raw as KernelMessage).catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        this.log('error', msg);
-      });
-    });
+    this.readStdin();
+  }
 
-    process.on('disconnect', () => process.exit(0));
+  /**
+   * Read newline-delimited JSON from stdin (kernel → module IPC).
+   * Keeps the event loop alive as long as the kernel holds the pipe open.
+   */
+  private async readStdin(): Promise<void> {
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      for await (const chunk of Deno.stdin.readable) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let newlineIdx: number;
+        while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newlineIdx).trim();
+          buffer = buffer.slice(newlineIdx + 1);
+          if (!line) continue;
+          try {
+            const msg = JSON.parse(line) as KernelMessage;
+            this.handleKernelMessage(msg).catch((err) => {
+              this.log('error', err instanceof Error ? err.message : String(err));
+            });
+          } catch {
+            // Ignore malformed JSON lines
+          }
+        }
+      }
+    } catch {
+      // stdin closed — kernel terminated
+    }
+
+    // Stdin closed means kernel is gone — exit cleanly
+    Deno.exit(0);
   }
 
   // ─── Handle messages from kernel ─────────────────────────
@@ -73,7 +100,7 @@ export abstract class ModuleRunner {
 
       case 'shutdown':
         await this.onShutdown();
-        process.exit(0);
+        Deno.exit(0);
         break;
 
       case 'deps_ready':
@@ -321,9 +348,14 @@ export abstract class ModuleRunner {
     return randomUUID();
   }
 
+  private encoder = new TextEncoder();
+
   private send(msg: ModuleMessage): void {
-    if (process.send) {
-      process.send(msg);
+    try {
+      const line = JSON.stringify(msg) + '\n';
+      Deno.stdout.writeSync(this.encoder.encode(line));
+    } catch {
+      // stdout closed — kernel is gone
     }
   }
 }
