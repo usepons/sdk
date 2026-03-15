@@ -34,7 +34,9 @@ export type KernelMessage =
   /** All required services are available — module can start deferred initialization */
   | { type: 'deps_ready' }
   /** An optional service declared in optionalRequires has become available */
-  | { type: 'service_available'; service: string };
+  | { type: 'service_available'; service: string }
+  /** Sent on first-ever spawn — triggers onInstall() lifecycle hook */
+  | { type: 'install' };
 
 // ─── Module → Kernel ──────────────────────────────────────────
 

@@ -5,15 +5,23 @@
  * Modules import from '@pons/sdk' instead of gateway internals.
  */
 
-export type PermissionRisk = 'low' | 'medium' | 'high';
+// ─── Module Capabilities & Permissions ───────────────────────
+
+export interface ModuleCapabilities {
+  services?: string[];
+  topics?: string[];
+}
+
+export interface ModulePermissions {
+  net?: string[];
+  read?: string[];
+  write?: string[];
+  env?: string[];
+  run?: string[];
+  sys?: string[];
+}
 
 // ─── Module Manifest ─────────────────────────────────────────
-
-export interface ModulePermissionDeclaration {
-  scope: string;
-  description: string;
-  risk?: PermissionRisk;
-}
 
 export interface ModuleCommandDeclaration {
   name: string;
@@ -49,8 +57,10 @@ export interface ModuleManifest {
   hooks?: string[];
   /** Bus topics this module subscribes to (kernel routes matching published messages) */
   subscribes?: string[];
-  /** Permission scopes this module registers. */
-  permissions?: ModulePermissionDeclaration[];
+  /** Deno sandbox permissions for the module worker. */
+  permissions?: ModulePermissions;
+  /** Capabilities this module declares (services it provides, topics it publishes). */
+  capabilities?: ModuleCapabilities;
   /** Slash commands this module provides for the web UI. */
   commands?: ModuleCommandDeclaration[];
   /** Service keys this module provides (validated after register()). */
@@ -61,7 +71,7 @@ export interface ModuleManifest {
   optionalRequires?: string[];
   /** Top-level config sections this module depends on. When these sections change, the module is restarted. */
   configDependencies?: string[];
-  /** Deno runtime permission flags (e.g. ['--allow-net=0.0.0.0:18790', '--allow-read', '--allow-env']). Defaults to ['--allow-all'] if omitted. */
+  /** Deno runtime permission flags (e.g. ['--allow-net=0.0.0.0:18790', '--allow-read', '--allow-env']). Defaults to '--deny-all'; permissions are derived from the 'permissions' block in module.json. */
   runtimePermissions?: string[];
   /** CLI command extension — registers subcommands under an existing CLI command group. */
   cli?: ModuleCliDeclaration;
