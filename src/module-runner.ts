@@ -17,7 +17,7 @@
 
 const randomUUID = (): string => crypto.randomUUID();
 import type { Logger } from './logger.ts';
-import type { ModuleManifest } from './module-types.ts';
+import type { ModuleManifest, ModulePermissions } from './module-types.ts';
 import type { KernelMessage, ModuleMessage } from './ipc-protocol.ts';
 
 interface PendingPromise {
@@ -98,6 +98,10 @@ export abstract class ModuleRunner {
         this.send({ type: 'pong' });
         break;
 
+      case 'install':
+        await this.onInstall();
+        break;
+
       case 'shutdown':
         await this.onShutdown();
         Deno.exit(0);
@@ -149,6 +153,9 @@ export abstract class ModuleRunner {
   }
 
   // ─── Overridable hooks ────────────────────────────────────
+
+  /** Called on first-ever spawn before init. Request permissions here. */
+  protected async onInstall(): Promise<void> {}
 
   /** Called after kernel sends 'init'. Set up connections, load state. */
   protected async onInit(): Promise<void> {}
@@ -267,6 +274,23 @@ export abstract class ModuleRunner {
   /** Resolve which module provides a service */
   protected async resolveService(service: string): Promise<string> {
     return this.call('service.resolve', { service }) as Promise<string>;
+  }
+
+  // ─── Permissions ─────────────────────────────────────────────
+
+  /** Request permissions from the kernel (typically called during onInstall). */
+  async requestPermissions(
+    permissions: Partial<ModulePermissions>,
+    reason?: string,
+  ): Promise<{ granted: boolean; pending?: boolean; denied?: boolean; requestId?: string }> {
+    return this.call('permissions.request', { permissions, reason }) as Promise<{ granted: boolean; pending?: boolean; denied?: boolean; requestId?: string }>;
+  }
+
+  /** Check whether this module currently has the given permissions. */
+  async checkPermissions(
+    permissions: Partial<ModulePermissions>,
+  ): Promise<{ granted: boolean; missing: Partial<ModulePermissions> }> {
+    return this.call('permissions.check', { permissions }) as Promise<{ granted: boolean; missing: Partial<ModulePermissions> }>;
   }
 
   // ─── Adapter factories ───────────────────────────────────────
