@@ -82,6 +82,8 @@ export abstract class ModuleRunner {
         this.workspacePath = msg.workspacePath;
         this.projectRoot = msg.projectRoot;
         await this.onInit();
+        // Auto-check and request missing permissions before declaring ready
+        await this.ensurePermissions();
         this.send({ type: 'ready', manifest: this.manifest });
         break;
 
@@ -279,6 +281,25 @@ export abstract class ModuleRunner {
   // ─── Permissions ─────────────────────────────────────────────
 
   /** Request permissions from the kernel (typically called during onInstall). */
+  /**
+   * Auto-check manifest permissions on boot and request any that are missing.
+   * Called automatically during init — modules don't need to call this.
+   */
+  private async ensurePermissions(): Promise<void> {
+    const perms = this.manifest.permissions;
+    if (!perms) return;
+
+    try {
+      const { granted, missing } = await this.checkPermissions(perms);
+      if (granted) return;
+
+      // Request the missing permissions
+      await this.requestPermissions(missing, `Module "${this.manifest.id}" requires these permissions to function`);
+    } catch {
+      // If the kernel doesn't support permission calls yet, skip silently
+    }
+  }
+
   async requestPermissions(
     permissions: Partial<ModulePermissions>,
     reason?: string,
