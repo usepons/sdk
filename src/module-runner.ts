@@ -289,15 +289,10 @@ export abstract class ModuleRunner {
     const perms = this.manifest.permissions;
     if (!perms) return;
 
-    try {
-      const { granted, missing } = await this.checkPermissions(perms);
-      if (granted) return;
+    const { granted, missing } = await this.checkPermissions(perms);
+    if (granted) return;
 
-      // Request the missing permissions
-      await this.requestPermissions(missing, `Module "${this.manifest.id}" requires these permissions to function`);
-    } catch {
-      // If the kernel doesn't support permission calls yet, skip silently
-    }
+    await this.requestPermissions(missing, `Module "${this.manifest.id}" requires these permissions to function`);
   }
 
   async requestPermissions(
