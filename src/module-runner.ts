@@ -32,6 +32,8 @@ export abstract class ModuleRunner {
   protected config: unknown = null;
   protected workspacePath = '';
   protected projectRoot = '';
+  /** Whether init has already been processed — guards against double init. */
+  private _initialized = false;
 
   // ─── Start ────────────────────────────────────────────────
 
@@ -69,7 +71,12 @@ export abstract class ModuleRunner {
       // stdin closed — kernel terminated
     }
 
-    // Stdin closed means kernel is gone — exit cleanly
+    // Stdin closed means kernel is gone — cleanup and exit
+    try {
+      await this.onShutdown();
+    } catch {
+      // shutdown handler may fail if kernel is gone — that's OK
+    }
     Deno.exit(0);
   }
 
@@ -78,6 +85,11 @@ export abstract class ModuleRunner {
   private async handleKernelMessage(msg: KernelMessage): Promise<void> {
     switch (msg.type) {
       case 'init':
+        if (this._initialized) {
+          // Ignore duplicate init — module already running
+          break;
+        }
+        this._initialized = true;
         this.config = msg.config;
         this.workspacePath = msg.workspacePath;
         this.projectRoot = msg.projectRoot;
@@ -389,13 +401,33 @@ export abstract class ModuleRunner {
   }
 
   private encoder = new TextEncoder();
+  /** Set to true when stdout write fails — all further sends are no-ops. */
+  private _channelClosed = false;
 
   private send(msg: ModuleMessage): void {
+    if (this._channelClosed) return;
     try {
       const line = JSON.stringify(msg) + '\n';
       Deno.stdout.writeSync(this.encoder.encode(line));
     } catch {
-      // stdout closed — kernel is gone
+      // stdout closed — kernel is gone; reject all pending calls/requests
+      this._channelClosed = true;
+      this.drainPendingOnClose();
     }
+  }
+
+  /** Reject all pending calls and requests when the IPC channel is lost. */
+  private drainPendingOnClose(): void {
+    const err = new Error('IPC channel closed — kernel disconnected');
+    for (const [, pending] of this.pendingCalls) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+    this.pendingCalls.clear();
+    for (const [, pending] of this.pendingRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+    this.pendingRequests.clear();
   }
 }

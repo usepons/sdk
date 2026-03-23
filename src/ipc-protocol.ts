@@ -13,8 +13,8 @@ import type { ModuleManifest } from './module-types.ts';
 // ─── Kernel → Module ──────────────────────────────────────────
 
 export type KernelMessage =
-  /** Sent after fork — delivers config and workspace info */
-  | { type: 'init'; config: unknown; workspacePath: string; projectRoot: string }
+  /** Sent after fork — delivers config, workspace info, and protocol version */
+  | { type: 'init'; protocolVersion: string; config: unknown; workspacePath: string; projectRoot: string }
   /** Forward a published message to this subscriber */
   | { type: 'deliver'; id: string; topic: string; payload: unknown }
   /** Health check */
@@ -41,8 +41,8 @@ export type KernelMessage =
 // ─── Module → Kernel ──────────────────────────────────────────
 
 export type ModuleMessage =
-  /** Module is ready — declares its manifest */
-  | { type: 'ready'; manifest: ModuleManifest }
+  /** Module is ready — declares its manifest and optionally its capabilities */
+  | { type: 'ready'; manifest: ModuleManifest; capabilities?: import('./module-types.ts').ModuleCapabilities }
   /** Log forwarding — kernel writes to the centralized log */
   | { type: 'log'; level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'; msg: string; data?: Record<string, unknown>; topic?: string }
   /** Grouped log — header line with sub-items rendered as a tree */

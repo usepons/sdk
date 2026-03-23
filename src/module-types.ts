@@ -39,6 +39,12 @@ export interface ModuleManifest {
   id: string;
   /** Entry point file relative to module directory. Default: 'runner.ts' */
   entrypoint?: string;
+  /** Alias for entrypoint (spec-compatible). If both are set, `entry` takes precedence. */
+  entry?: string;
+  /** Runtime to use for spawning the module process. Default: 'deno'. */
+  runtime?: 'deno' | 'node' | 'bun' | 'go' | 'rust' | 'python' | 'php' | 'binary';
+  /** Minimum IPC protocol version this module requires. Default: '1.0'. */
+  minProtocolVersion?: string;
   name: string;
   /** Resolved at load time from deno.json — not specified in module.json. */
   version?: string;
