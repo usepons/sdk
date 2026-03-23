@@ -101,7 +101,8 @@ export abstract class ModuleRunner {
         try {
           await this.onInit();
         } catch (err) {
-          // onInit failure → log error, exit 1 (spec §6.4)
+          // onInit failure → send nack, log error, exit 1 (spec §6.4)
+          this.send({ type: 'nack', id: 'init', error: String(err) });
           this.log('error', `onInit failed: ${err instanceof Error ? err.message : String(err)}`);
           this.logStderr(`[sdk] onInit failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
           Deno.exit(1);
@@ -204,8 +205,8 @@ export abstract class ModuleRunner {
   /** Called after kernel sends 'init'. Set up connections, load state. */
   protected async onInit(): Promise<void> {}
 
-  /** Called for each message delivered from the bus. */
-  protected abstract onMessage(topic: string, payload: unknown): Promise<void>;
+  /** Called for each message delivered from the bus. Override to handle pub/sub messages. */
+  protected async onMessage(_topic: string, _payload: unknown): Promise<void> {}
 
   /** Called when all required services are available. Override for deferred initialization. */
   protected async onDepsReady(): Promise<void> {}
@@ -214,9 +215,7 @@ export abstract class ModuleRunner {
    * Called when an optional service (from optionalRequires) becomes available.
    * Default: re-runs onDepsReady so modules can register routes, etc.
    */
-  protected async onServiceAvailable(_service: string): Promise<void> {
-    await this.onDepsReady();
-  }
+  protected async onServiceAvailable(_service: string): Promise<void> {}
 
   /** Called before shutdown. Persist state here. */
   protected async onShutdown(): Promise<void> {}
@@ -229,7 +228,7 @@ export abstract class ModuleRunner {
    * Override to expose service methods.
    */
   protected async onRequest(_method: string, _params: unknown): Promise<unknown> {
-    throw new Error(`Unhandled RPC method: ${_method}`);
+    return undefined;
   }
 
   // ─── Kernel communication ─────────────────────────────────
@@ -455,21 +454,23 @@ export abstract class ModuleRunner {
     }
   }
 
-  /** Graceful shutdown — drain pending, call hook, exit (spec §6.3, §7.4). */
+  /** Graceful shutdown — call hook, drain pending, exit (spec §6.3, §7.4). */
   private async gracefulShutdown(): Promise<void> {
     if (this._shuttingDown) return;
     this._shuttingDown = true;
 
-    // Drain all pending calls/requests before exit (spec §7.4)
-    this.drainPending('module shutting down');
-
+    let shutdownFailed = false;
     try {
       await this.onShutdown();
     } catch (err) {
-      // onShutdown failure → log error, still exit (spec §6.4)
+      // onShutdown failure → log error, exit 1 (spec §6.4)
+      shutdownFailed = true;
       this.logStderr(`[sdk] onShutdown failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
     }
-    Deno.exit(0);
+
+    // Drain all pending calls/requests after onShutdown (spec §7.4)
+    this.drainPending('module shutting down');
+    Deno.exit(shutdownFailed ? 1 : 0);
   }
 
   /** Reject all pending calls and requests with a reason. */

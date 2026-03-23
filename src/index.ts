@@ -12,3 +12,4 @@ export type { SandboxStatus, SandboxConfig, SandboxState, SandboxFile, SandboxEx
 export { FileStorageAdapter } from './file-storage.ts';
 export { defineConfigSchema } from './config.ts';
 export type { ConfigSchemaDefinition, ConfigSchemaMeta } from './config.ts';
+export { ERROR_PREFIX } from './error-prefixes.ts';
