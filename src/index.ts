@@ -8,4 +8,7 @@ export type { SkillManifest, PermissionScope, SkillHandlerModule, SkillTool, Too
 export type { Memory, Transcript, TranscriptEntry } from './memory-types.ts';
 export type { AgentConfig, SoulEvolutionProposal, Session } from './agent-types.ts';
 export type { IdentityLink, LinkedSender } from './identity-types.ts';
+export type { SandboxStatus, SandboxConfig, SandboxState, SandboxFile, SandboxExecResult, SandboxEvent } from './sandbox-types.ts';
 export { FileStorageAdapter } from './file-storage.ts';
+export { defineConfigSchema } from './config.ts';
+export type { ConfigSchemaDefinition, ConfigSchemaMeta } from './config.ts';

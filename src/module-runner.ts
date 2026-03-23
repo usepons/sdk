@@ -15,10 +15,11 @@
  *   new MyModule().start();
  */
 
-const randomUUID = (): string => crypto.randomUUID();
 import type { Logger } from './logger.ts';
 import type { ModuleManifest, ModulePermissions } from './module-types.ts';
 import type { KernelMessage, ModuleMessage } from './ipc-protocol.ts';
+
+const PENDING_MAP_WARN_THRESHOLD = 1000;
 
 interface PendingPromise {
   resolve: (v: unknown) => void;
@@ -38,6 +39,14 @@ export abstract class ModuleRunner {
   // ─── Start ────────────────────────────────────────────────
 
   start(): void {
+    // Register SIGTERM handler for graceful shutdown (spec §15)
+    try {
+      Deno.addSignalListener('SIGTERM', () => {
+        this.gracefulShutdown();
+      });
+    } catch {
+      // Signal listeners may not be available in all environments
+    }
     this.readStdin();
   }
 
@@ -63,7 +72,8 @@ export abstract class ModuleRunner {
               this.log('error', err instanceof Error ? err.message : String(err));
             });
           } catch {
-            // Ignore malformed JSON lines
+            // Malformed JSON — log debug and skip (spec §4)
+            this.logStderr(`[sdk] Malformed JSON on stdin — skipping line`);
           }
         }
       }
@@ -72,12 +82,7 @@ export abstract class ModuleRunner {
     }
 
     // Stdin closed means kernel is gone — cleanup and exit
-    try {
-      await this.onShutdown();
-    } catch {
-      // shutdown handler may fail if kernel is gone — that's OK
-    }
-    Deno.exit(0);
+    await this.gracefulShutdown();
   }
 
   // ─── Handle messages from kernel ─────────────────────────
@@ -93,7 +98,15 @@ export abstract class ModuleRunner {
         this.config = msg.config;
         this.workspacePath = msg.workspacePath;
         this.projectRoot = msg.projectRoot;
-        await this.onInit();
+        try {
+          await this.onInit();
+        } catch (err) {
+          // onInit failure → log error, exit 1 (spec §6.4)
+          this.log('error', `onInit failed: ${err instanceof Error ? err.message : String(err)}`);
+          this.logStderr(`[sdk] onInit failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+          Deno.exit(1);
+          return;
+        }
         // Auto-check and request missing permissions before declaring ready
         await this.ensurePermissions();
         this.send({ type: 'ready', manifest: this.manifest });
@@ -117,8 +130,7 @@ export abstract class ModuleRunner {
         break;
 
       case 'shutdown':
-        await this.onShutdown();
-        Deno.exit(0);
+        await this.gracefulShutdown();
         break;
 
       case 'deps_ready':
@@ -135,14 +147,25 @@ export abstract class ModuleRunner {
           const result = await this.onRequest(msg.method, msg.params);
           this.send({ type: 'call:response', id: msg.id, result });
         } catch (err) {
+          // Log stack trace but send only message string (spec §16)
+          this.log('error', `onRequest(${msg.method}) failed: ${err instanceof Error ? err.message : String(err)}`);
           this.send({ type: 'call:response', id: msg.id, error: String(err) });
         }
         break;
 
-      case 'config:update':
+      case 'config:update': {
+        // Save previous config for rollback on failure (spec §6.4)
+        const prevConfig = this.config;
         this.config = msg.config;
-        await this.onConfigUpdate(msg.changedSections);
+        try {
+          await this.onConfigUpdate(msg.changedSections);
+        } catch (err) {
+          // Rollback to previous config, log error, continue (spec §6.4)
+          this.config = prevConfig;
+          this.log('error', `onConfigUpdate failed — rolling back: ${err instanceof Error ? err.message : String(err)}`);
+        }
         break;
+      }
 
       // Response to this module's kernel call
       case 'call:response':
@@ -155,6 +178,8 @@ export abstract class ModuleRunner {
           const result = await this.onRequest(msg.method, msg.params);
           this.send({ type: 'rpc_response', id: msg.id, result });
         } catch (err) {
+          // Log stack trace but send only message string (spec §16)
+          this.log('error', `onRequest(${msg.method}) failed: ${err instanceof Error ? err.message : String(err)}`);
           this.send({ type: 'rpc_response', id: msg.id, error: String(err) });
         }
         break;
@@ -162,6 +187,11 @@ export abstract class ModuleRunner {
       // Response to this module's RPC request
       case 'rpc_response':
         this.resolvePending(this.pendingRequests, msg.id, msg.result, msg.error);
+        break;
+
+      default:
+        // Unknown message type — log debug and ignore (forward compatibility, spec §5)
+        this.log('debug', `Unknown kernel message type: ${(msg as { type: string }).type} — ignoring`);
         break;
     }
   }
@@ -231,7 +261,7 @@ export abstract class ModuleRunner {
   /** Call a kernel service (config.get, module.list, service.discover, etc.) */
   protected call(method: string, params?: unknown, timeoutMs = 10_000): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const id = this.generateId();
+      const id = generateId();
       const timer = setTimeout(() => {
         this.pendingCalls.delete(id);
         reject(new Error(`Kernel call ${method} timed out`));
@@ -243,6 +273,7 @@ export abstract class ModuleRunner {
         timer,
       });
 
+      this.warnIfPendingOverflow(this.pendingCalls, 'pendingCalls');
       this.send({ type: 'call', id, method, params });
     });
   }
@@ -262,7 +293,7 @@ export abstract class ModuleRunner {
    */
   protected request<T = unknown>(service: string, method: string, params?: unknown, timeoutMs = 30_000): Promise<T> {
     return new Promise((resolve, reject) => {
-      const id = this.generateId();
+      const id = generateId();
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`RPC ${service}.${method} timed out`));
@@ -274,6 +305,7 @@ export abstract class ModuleRunner {
         timer,
       });
 
+      this.warnIfPendingOverflow(this.pendingRequests, 'pendingRequests');
       this.send({ type: 'rpc_request', id, service, method, params });
     });
   }
@@ -396,13 +428,18 @@ export abstract class ModuleRunner {
     else pending.resolve(result);
   }
 
-  private generateId(): string {
-    return randomUUID();
+  /** Warn if pending map grows beyond threshold — indicates a leak or unresponsive dependency (spec §7.4). */
+  private warnIfPendingOverflow(map: Map<string, PendingPromise>, name: string): void {
+    if (map.size > PENDING_MAP_WARN_THRESHOLD) {
+      this.log('warn', `${name} has ${map.size} entries — possible memory leak or unresponsive dependency`);
+    }
   }
 
   private encoder = new TextEncoder();
   /** Set to true when stdout write fails — all further sends are no-ops. */
   private _channelClosed = false;
+  /** Prevents re-entrant shutdown. */
+  private _shuttingDown = false;
 
   private send(msg: ModuleMessage): void {
     if (this._channelClosed) return;
@@ -410,15 +447,34 @@ export abstract class ModuleRunner {
       const line = JSON.stringify(msg) + '\n';
       Deno.stdout.writeSync(this.encoder.encode(line));
     } catch {
-      // stdout closed — kernel is gone; reject all pending calls/requests
+      // stdout closed — kernel is gone; log to stderr, drain pending, exit (spec §4.3)
       this._channelClosed = true;
-      this.drainPendingOnClose();
+      this.logStderr('[sdk] IPC write failed (broken pipe) — shutting down');
+      this.drainPending('IPC channel closed — kernel disconnected');
+      Deno.exit(1);
     }
   }
 
-  /** Reject all pending calls and requests when the IPC channel is lost. */
-  private drainPendingOnClose(): void {
-    const err = new Error('IPC channel closed — kernel disconnected');
+  /** Graceful shutdown — drain pending, call hook, exit (spec §6.3, §7.4). */
+  private async gracefulShutdown(): Promise<void> {
+    if (this._shuttingDown) return;
+    this._shuttingDown = true;
+
+    // Drain all pending calls/requests before exit (spec §7.4)
+    this.drainPending('module shutting down');
+
+    try {
+      await this.onShutdown();
+    } catch (err) {
+      // onShutdown failure → log error, still exit (spec §6.4)
+      this.logStderr(`[sdk] onShutdown failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+    }
+    Deno.exit(0);
+  }
+
+  /** Reject all pending calls and requests with a reason. */
+  private drainPending(reason: string): void {
+    const err = new Error(reason);
     for (const [, pending] of this.pendingCalls) {
       clearTimeout(pending.timer);
       pending.reject(err);
@@ -430,4 +486,18 @@ export abstract class ModuleRunner {
     }
     this.pendingRequests.clear();
   }
+
+  /** Write directly to stderr (for situations where IPC is unavailable). */
+  private logStderr(msg: string): void {
+    try {
+      Deno.stderr.writeSync(this.encoder.encode(msg + '\n'));
+    } catch {
+      // stderr also closed — nothing we can do
+    }
+  }
+}
+
+/** Generate a unique identifier (UUID v4). Exported as a public utility (spec §19). */
+export function generateId(): string {
+  return crypto.randomUUID();
 }
