@@ -27,9 +27,10 @@ export function getPonsHome(): string {
     return home + '/.pons';
   } catch {
     // Fallback for non-Deno environments (Node compat)
-    const home = (globalThis as Record<string, Record<string, string>>).process?.env?.['HOME'] ??
-      (globalThis as Record<string, Record<string, string>>).process?.env?.['USERPROFILE'] ?? '/root';
-    const envHome = (globalThis as Record<string, Record<string, string>>).process?.env?.['PONS_HOME'];
+    // deno-lint-ignore no-explicit-any
+    const proc = (globalThis as any).process as { env?: Record<string, string | undefined> } | undefined;
+    const home = proc?.env?.['HOME'] ?? proc?.env?.['USERPROFILE'] ?? '/root';
+    const envHome = proc?.env?.['PONS_HOME'];
     if (envHome) {
       if (envHome.startsWith('~')) return home + envHome.slice(1);
       return envHome;

@@ -63,6 +63,8 @@ export interface ModuleManifest {
   hooks?: string[];
   /** Bus topics this module subscribes to (kernel routes matching published messages) */
   subscribes?: string[];
+  /** Bus topics this module publishes to (used for capability derivation) */
+  publishes?: string[];
   /** Deno sandbox permissions for the module worker. */
   permissions?: ModulePermissions;
   /** Capabilities this module declares (services it provides, topics it publishes). */
